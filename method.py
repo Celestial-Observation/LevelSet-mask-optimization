@@ -138,7 +138,6 @@ def calculate_levelset_with_mask_check(phi, target, iter=50, min_distance=30):
     best_phi = phi
     best_mask = None
     
-    # 加入进度条
     for iter in tqdm(range(iter), desc="Optimization Iteration"):
         mask = binarize(phi)
         
