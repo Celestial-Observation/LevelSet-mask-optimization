@@ -241,9 +241,9 @@ def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
     plt.savefig(resist_path)'''
     
 def main():
-    input_path = "levelset/image/alu_45_output.png"
-    save_path = 'levelset/image/result.png'
-    resist_path = 'levelset/image/resist_img.png'
+    input_path = "image/alu_45_output.png"
+    save_path = 'image/result.png'
+    resist_path = 'image/resist_img.png'
     
     # 加载图像
     binary_image = load_image(input_path)
