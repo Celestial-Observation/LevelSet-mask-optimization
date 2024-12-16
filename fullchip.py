@@ -73,6 +73,52 @@ def split_image_into_patches(image, patch_size, overlap):
     
     return patches, coordinates
 
+def split_image_into_patches_with_padding(image, patch_size, overlap, padding=250):
+    """
+    将图像分割成带有重叠和黑边的补丁
+    :param image: 输入图像
+    :param patch_size: 补丁大小 (height, width)
+    :param overlap: 重叠大小
+    :param padding: 黑边大小
+    :return: 补丁列表和坐标列表
+    """
+    h, w = image.shape
+    ph, pw = patch_size
+    oh, ow = overlap
+
+    patches = []
+    coordinates = []
+
+    for y in range(0, h - ph + 1, ph - oh):
+        for x in range(0, w - pw + 1, pw - ow):
+            patch = np.zeros((ph + 2 * padding, pw + 2 * padding), dtype=image.dtype)
+            patch[padding:padding + ph, padding:padding + pw] = image[y:y + ph, x:x + pw]
+            patches.append(patch)
+            coordinates.append((y, x))
+    
+    # 处理边界情况
+    if h % (ph - oh) != 0:
+        for x in range(0, w - pw + 1, pw - ow):
+            patch = np.zeros((ph + 2 * padding, pw + 2 * padding), dtype=image.dtype)
+            patch[padding:padding + (h - (h - ph)), padding:padding + pw] = image[h - ph:h, x:x + pw]
+            patches.append(patch)
+            coordinates.append((h - ph, x))
+    
+    if w % (pw - ow) != 0:
+        for y in range(0, h - ph + 1, ph - oh):
+            patch = np.zeros((ph + 2 * padding, pw + 2 * padding), dtype=image.dtype)
+            patch[padding:padding + ph, padding:padding + (w - (w - pw))] = image[y:y + ph, w - pw:w]
+            patches.append(patch)
+            coordinates.append((y, w - pw))
+    
+    if h % (ph - oh) != 0 and w % (pw - ow) != 0:
+        patch = np.zeros((ph + 2 * padding, pw + 2 * padding), dtype=image.dtype)
+        patch[padding:padding + (h - (h - ph)), padding:padding + (w - (w - pw))] = image[h - ph:h, w - pw:w]
+        patches.append(patch)
+        coordinates.append((h - ph, w - pw))
+    
+    return patches, coordinates
+
 def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
     """
     将补丁合并回原始图像
@@ -125,6 +171,35 @@ def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
 
     return smoothed_output
 
+def merge_patches_without_padding(patches, coordinates, output_shape, patch_size, overlap, padding=250):
+    """
+    将补丁合并回原始图像，去除黑边
+    :param patches: 补丁列表
+    :param coordinates: 补丁对应的坐标列表
+    :param output_shape: 输出图像的形状
+    :param patch_size: 补丁大小 (height, width)
+    :param overlap: 重叠大小
+    :param padding: 黑边大小
+    :return: 合并后的图像
+    """
+    h, w = output_shape
+    ph, pw = patch_size
+    oh, ow = overlap
+
+    output = torch.zeros((h, w), device=device)
+    weight = torch.zeros((h, w), device=device)
+
+    for patch, (y, x) in tqdm(zip(patches, coordinates), total=len(patches), desc="Merging Patches"):
+        patch = patch[padding:padding + ph, padding:padding + pw]  # 去除黑边
+        patch_h, patch_w = patch.shape
+
+        output[y:y + patch_h, x:x + patch_w] += patch
+        weight[y:y + patch_h, x:x + patch_w] += 1
+
+    weight[weight == 0] = 1
+    output /= weight
+    return output
+
 
 '''def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
     """
@@ -168,77 +243,6 @@ def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
     # Normalize to handle weight overlaps
     output /= weight
     return output'''
-
-
-'''def main():
-    input_path = "levelset/image/alu_45_output.png"
-    save_path = 'levelset/image/result.png'
-    resist_path = 'levelset/image/resist_img.png'
-    
-    # 加载图像
-    binary_image = load_image(input_path)
-    h, w = binary_image.shape
-    
-    # 定义补丁大小和重叠
-    patch_size = (4000, 4000)
-    overlap = (250, 250)
-    
-    # 分割图像
-    patches, coordinates = split_image_into_patches(binary_image.cpu().numpy(), patch_size, overlap)
-    patches = [torch.tensor(patch, dtype=torch.float32, device=device) for patch in patches]
-    
-    # 初始化梯度和优化参数
-    gradients = []
-    best_phis = []
-    best_masks = []
-    best_print_imgs = []
-    
-    # 处理每个补丁
-    for i, patch in enumerate(tqdm(patches, desc="Processing Patches")):
-        phi = extract_contour(patch)
-        l2Min, pvbMin, phi_opt, mask_opt, resist_result = calculate_levelset_with_mask_check(phi, patch)
-        
-        gradients.append(gradImage(phi_opt)[0])  # 只取 gradX
-        best_phis.append(phi_opt)
-        best_masks.append(mask_opt)
-        best_print_imgs.append(resist_result)
-        
-        torch.cuda.empty_cache()
-    
-    # 合并结果
-    merged_phi = merge_patches(best_phis, coordinates, (h, w), patch_size, overlap)
-    merged_mask = merge_patches(best_masks, coordinates, (h, w), patch_size, overlap)
-    merged_resist_result = merge_patches(best_print_imgs, coordinates, (h, w), patch_size, overlap)
-    
-    # 保存结果
-    plt.figure(figsize=(34.4, 14.4))
-    
-    plt.subplot(221)
-    plt.imshow(binary_image.cpu(), cmap="gray")
-    plt.title("Layout")
-    
-    plt.subplot(222)
-    pic1 = plt.imshow(extract_contour(binary_image).cpu().detach().numpy(), cmap="RdYlBu")
-    plt.contour(extract_contour(binary_image).cpu().detach().numpy(), levels=50, colors="white", linewidths=0.5)
-    plt.colorbar(pic1)
-    plt.title("Level Set Function (LSF)")
-    
-    plt.subplot(223)
-    pic2 = plt.imshow(merged_phi.cpu().detach().numpy(), cmap="RdYlBu")
-    plt.contour(merged_phi.cpu().detach().numpy(), levels=50, colors="white", linewidths=0.5)
-    plt.colorbar(pic2)
-    plt.title("Optimized LSF")
-    
-    plt.subplot(224)
-    plt.imshow(merged_mask.cpu().detach().numpy(), cmap="gray")
-    plt.title("Optimized Mask")
-    
-    plt.tight_layout()
-    plt.savefig(save_path)
-    
-    plt.figure(figsize=(10.24, 10.24))
-    plt.imshow(merged_resist_result.cpu().detach().numpy())
-    plt.savefig(resist_path)'''
     
 def main():
     input_path = "image/alu_45_output.png"
@@ -254,7 +258,7 @@ def main():
     overlap = (250, 250)
     
     # 分割图像
-    patches, coordinates = split_image_into_patches(binary_image.cpu().numpy(), patch_size, overlap)
+    patches, coordinates = split_image_into_patches_with_padding(binary_image.cpu().numpy(), patch_size, overlap)
     
     # 初始化结果列表
     best_phis = []
@@ -292,11 +296,14 @@ def main():
         
         del phi_opt, mask_opt, resist_result
         torch.cuda.empty_cache()
+
+    binarize = Binarize()
     
     # 合并结果
-    merged_phi = merge_patches(best_phis, coordinates, (h, w), patch_size, overlap)
-    merged_mask = merge_patches(best_masks, coordinates, (h, w), patch_size, overlap)
-    merged_resist_result = merge_patches(best_print_imgs, coordinates, (h, w), patch_size, overlap)
+    merged_phi = merge_patches_without_padding(best_phis, coordinates, (h, w), patch_size, overlap)
+    #merged_mask = merge_patches(best_masks, coordinates, (h, w), patch_size, overlap)
+    merged_mask = binarize(merged_phi)
+    merged_resist_result = merge_patches_without_padding(best_print_imgs, coordinates, (h, w), patch_size, overlap)
     #merged_mask = torch.where(merged_mask > 0.675, torch.tensor(1), torch.tensor(0))
     
     # 保存结果
