@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 from PIL import Image
 import torch
@@ -10,6 +11,17 @@ from method import load_image, calculate_levelset_with_mask_check, gradImage, ph
 
 # 设置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def resize_patch(patch, scale):
+    """
+    调整补丁大小
+    :param patch: 输入补丁 (numpy 数组)
+    :param scale: 缩放比例 (float)
+    :return: 缩放后的补丁
+    """
+    h, w = patch.shape
+    new_h, new_w = int(h * scale), int(w * scale)
+    return np.array(Image.fromarray(patch).resize((new_w, new_h), Image.BILINEAR))
 
 def poisson_blend(source, target, mask):
     """
@@ -245,7 +257,7 @@ def merge_patches_without_padding(patches, coordinates, output_shape, patch_size
     return output'''
     
 def main():
-    input_path = "image/alu_45_output.png"
+    input_path = "image/gcd_45_output.png"
     save_path = 'image/result.png'
     resist_path = 'image/resist_img.png'
     
@@ -254,8 +266,9 @@ def main():
     h, w = binary_image.shape
     
     # 定义补丁大小和重叠
-    patch_size = (2000, 2000)
+    patch_size = (3000, 3000)
     overlap = (250, 250)
+    scale_factor = 0.5
     
     # 分割图像
     patches, coordinates = split_image_into_patches_with_padding(binary_image.cpu().numpy(), patch_size, overlap)
@@ -271,10 +284,20 @@ def main():
     
     # 处理每个补丁
     for i, patch in enumerate(tqdm(patches, desc="Processing Patches")):
-        patch_tensor = torch.tensor(patch, dtype=torch.float32, device=device)
+        
+        resized_patch = resize_patch(patch, scale_factor)
+        patch_tensor = torch.tensor(resized_patch, dtype=torch.float32, device=device)
         
         phi = extract_contour(patch_tensor)
         l2Min, pvbMin, phi_opt, mask_opt, resist_result = calculate_levelset_with_mask_check(phi, patch_tensor)
+        
+        phi_opt_resized = resize_patch(phi_opt.detach().cpu().numpy(), 1 / scale_factor)
+        mask_opt_resized = resize_patch(mask_opt.detach().cpu().numpy(), 1 / scale_factor)
+        resist_result_resized = resize_patch(resist_result.detach().cpu().numpy(), 1 / scale_factor)
+        
+        phi_opt = torch.tensor(phi_opt_resized, dtype=torch.float32, device=device)
+        mask_opt = torch.tensor(mask_opt_resized, dtype=torch.float32, device=device)
+        resist_result = torch.tensor(resist_result_resized, dtype=torch.float32, device=device)
         
         # 保存结果到临时文件
         torch.save(phi_opt, os.path.join(temp_folder, f'phi_{i}.pt'))
@@ -334,7 +357,7 @@ def main():
     #plt.show()
     
     plt.figure(figsize=(102.4, 102.4))
-    plt.imshow(merged_resist_result.cpu().detach().numpy())
+    plt.imshow(merged_resist_result.cpu().detach().numpy(), cmap="gray")
     plt.savefig(resist_path)
     #plt.show()
     
@@ -343,4 +366,7 @@ def main():
     shutil.rmtree(temp_folder)
 
 if __name__ == "__main__":
+    begin = time.time()
     main()
+    runtime = time.time() - begin
+    print(runtime)
