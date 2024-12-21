@@ -1,4 +1,5 @@
 import os
+import time
 import numpy as np
 from PIL import Image
 import torch
@@ -6,10 +7,16 @@ import torch.nn.functional as F
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from method import load_image, calculate_levelset_with_mask_check, gradImage, photolithograph, apply_smoothing, Binarize, extract_contour
+from levelset import load_image, calculate_levelset_with_mask_check, gradImage, photolithograph, apply_smoothing, Binarize, extract_contour
 
 # 设置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def resize_patch(patch, scale):
+
+    h, w = patch.shape
+    new_h, new_w = int(h * scale), int(w * scale)
+    return np.array(Image.fromarray(patch).resize((new_w, new_h), Image.BILINEAR))
 
 def poisson_blend(source, target, mask):
 
@@ -39,7 +46,6 @@ def split_image_into_patches(image, patch_size, overlap):
             patches.append(patch)
             coordinates.append((y, x))
     
-    # 处理边界情况
     if h % (ph - oh) != 0:
         for x in range(0, w - pw + 1, pw - ow):
             patch = image[h-ph:h, x:x+pw]
@@ -74,7 +80,7 @@ def split_image_into_patches_with_padding(image, patch_size, overlap, padding=25
             patch[padding:padding + ph, padding:padding + pw] = image[y:y + ph, x:x + pw]
             patches.append(patch)
             coordinates.append((y, x))
-    
+
     if h % (ph - oh) != 0:
         for x in range(0, w - pw + 1, pw - ow):
             patch = np.zeros((ph + 2 * padding, pw + 2 * padding), dtype=image.dtype)
@@ -149,7 +155,7 @@ def merge_patches_without_padding(patches, coordinates, output_shape, patch_size
     weight = torch.zeros((h, w), device=device)
 
     for patch, (y, x) in tqdm(zip(patches, coordinates), total=len(patches), desc="Merging Patches"):
-        patch = patch[padding:padding + ph, padding:padding + pw] 
+        patch = patch[padding:padding + ph, padding:padding + pw]  # 去除黑边
         patch_h, patch_w = patch.shape
 
         output[y:y + patch_h, x:x + patch_w] += patch
@@ -196,15 +202,16 @@ def merge_patches_without_padding(patches, coordinates, output_shape, patch_size
     return output'''
     
 def main():
-    input_path = "image/alu_45_output.png"
+    input_path = "image/gcd_45_output.png"
     save_path = 'image/result.png'
     resist_path = 'image/resist_img.png'
-
+    
     binary_image = load_image(input_path)
     h, w = binary_image.shape
-
-    patch_size = (2000, 2000)
+    
+    patch_size = (3000, 3000)
     overlap = (250, 250)
+    scale_factor = 0.5
     
     patches, coordinates = split_image_into_patches_with_padding(binary_image.cpu().numpy(), patch_size, overlap)
     
@@ -216,10 +223,20 @@ def main():
     os.makedirs(temp_folder, exist_ok=True)
     
     for i, patch in enumerate(tqdm(patches, desc="Processing Patches")):
-        patch_tensor = torch.tensor(patch, dtype=torch.float32, device=device)
+        
+        resized_patch = resize_patch(patch, scale_factor)
+        patch_tensor = torch.tensor(resized_patch, dtype=torch.float32, device=device)
         
         phi = extract_contour(patch_tensor)
         l2Min, pvbMin, phi_opt, mask_opt, resist_result = calculate_levelset_with_mask_check(phi, patch_tensor)
+        
+        phi_opt_resized = resize_patch(phi_opt.detach().cpu().numpy(), 1 / scale_factor)
+        mask_opt_resized = resize_patch(mask_opt.detach().cpu().numpy(), 1 / scale_factor)
+        resist_result_resized = resize_patch(resist_result.detach().cpu().numpy(), 1 / scale_factor)
+        
+        phi_opt = torch.tensor(phi_opt_resized, dtype=torch.float32, device=device)
+        mask_opt = torch.tensor(mask_opt_resized, dtype=torch.float32, device=device)
+        resist_result = torch.tensor(resist_result_resized, dtype=torch.float32, device=device)
         
         torch.save(phi_opt, os.path.join(temp_folder, f'phi_{i}.pt'))
         torch.save(mask_opt, os.path.join(temp_folder, f'mask_{i}.pt'))
@@ -248,7 +265,7 @@ def main():
     merged_resist_result = merge_patches_without_padding(best_print_imgs, coordinates, (h, w), patch_size, overlap)
     #merged_mask = torch.where(merged_mask > 0.675, torch.tensor(1), torch.tensor(0))
     
-    plt.figure(figsize=(344, 144))
+    plt.figure(figsize=(200, 200))
     
     plt.subplot(221)
     plt.imshow(binary_image.cpu(), cmap="gray")
@@ -275,7 +292,7 @@ def main():
     #plt.show()
     
     plt.figure(figsize=(102.4, 102.4))
-    plt.imshow(merged_resist_result.cpu().detach().numpy())
+    plt.imshow(merged_resist_result.cpu().detach().numpy(), cmap="gray")
     plt.savefig(resist_path)
     #plt.show()
     
@@ -283,4 +300,9 @@ def main():
     shutil.rmtree(temp_folder)
 
 if __name__ == "__main__":
-    main()
+    
+    import cProfile
+    cProfile.run("main()", "result")
+    
+    import pstats
+    pstats.Stats('result').sort_stats(-1).print_stats()
