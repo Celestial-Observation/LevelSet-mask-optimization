@@ -7,51 +7,32 @@ import torch.nn.functional as F
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-from method import load_image, calculate_levelset_with_mask_check, gradImage, photolithograph, apply_smoothing, Binarize, extract_contour
+from levelset import load_image, calculate_levelset_with_mask_check, gradImage, photolithograph, apply_smoothing, Binarize, extract_contour
 
 # 设置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def resize_patch(patch, scale):
-    """
-    调整补丁大小
-    :param patch: 输入补丁 (numpy 数组)
-    :param scale: 缩放比例 (float)
-    :return: 缩放后的补丁
-    """
+
     h, w = patch.shape
     new_h, new_w = int(h * scale), int(w * scale)
     return np.array(Image.fromarray(patch).resize((new_w, new_h), Image.BILINEAR))
 
 def poisson_blend(source, target, mask):
-    """
-    基于泊松方程的融合方法
-    :param source: 源图像的重叠部分 (patch 部分)
-    :param target: 目标图像的重叠部分 (output 部分)
-    :param mask: 重叠区域的二值掩码
-    :return: 融合后的结果
-    """
-    # Compute the Laplacian of the source
+
     laplacian = torch.nn.functional.conv2d(
         source.unsqueeze(0).unsqueeze(0),
         torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]], dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0),
         padding=1
     )[0, 0]
 
-    # Initialize result as the target
     result = target.clone()
     result[mask] = source[mask] + 0.25 * laplacian[mask]
 
     return result
 
 def split_image_into_patches(image, patch_size, overlap):
-    """
-    将图像分割成带有重叠的补丁
-    :param image: 输入图像
-    :param patch_size: 补丁大小 (height, width)
-    :param overlap: 重叠大小
-    :return: 补丁列表和坐标列表
-    """
+
     h, w = image.shape
     ph, pw = patch_size
     oh, ow = overlap
@@ -65,7 +46,6 @@ def split_image_into_patches(image, patch_size, overlap):
             patches.append(patch)
             coordinates.append((y, x))
     
-    # 处理边界情况
     if h % (ph - oh) != 0:
         for x in range(0, w - pw + 1, pw - ow):
             patch = image[h-ph:h, x:x+pw]
@@ -86,14 +66,7 @@ def split_image_into_patches(image, patch_size, overlap):
     return patches, coordinates
 
 def split_image_into_patches_with_padding(image, patch_size, overlap, padding=250):
-    """
-    将图像分割成带有重叠和黑边的补丁
-    :param image: 输入图像
-    :param patch_size: 补丁大小 (height, width)
-    :param overlap: 重叠大小
-    :param padding: 黑边大小
-    :return: 补丁列表和坐标列表
-    """
+
     h, w = image.shape
     ph, pw = patch_size
     oh, ow = overlap
@@ -107,8 +80,7 @@ def split_image_into_patches_with_padding(image, patch_size, overlap, padding=25
             patch[padding:padding + ph, padding:padding + pw] = image[y:y + ph, x:x + pw]
             patches.append(patch)
             coordinates.append((y, x))
-    
-    # 处理边界情况
+
     if h % (ph - oh) != 0:
         for x in range(0, w - pw + 1, pw - ow):
             patch = np.zeros((ph + 2 * padding, pw + 2 * padding), dtype=image.dtype)
@@ -132,15 +104,7 @@ def split_image_into_patches_with_padding(image, patch_size, overlap, padding=25
     return patches, coordinates
 
 def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
-    """
-    将补丁合并回原始图像
-    :param patches: 补丁列表
-    :param coordinates: 补丁对应的坐标列表
-    :param output_shape: 输出图像的形状
-    :param patch_size: 补丁大小 (height, width)
-    :param overlap: 重叠大小
-    :return: 合并后的图像
-    """
+
     h, w = output_shape
     ph, pw = patch_size
     oh, ow = overlap
@@ -157,12 +121,11 @@ def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
 
     output /= weight
 
-    # 提取重叠区域并进行高斯平滑
     output_np = output.detach().cpu().numpy()
     smoothed_output_np = output_np.copy()
 
     for patch, (y, x) in tqdm(zip(patches, coordinates), total=len(patches), desc="Smoothing Overlaps"):
-        # 定义重叠区域
+
         y_start, y_end = max(y, 0), min(y + ph, h)
         x_start, x_end = max(x, 0), min(x + pw, w)
 
@@ -178,22 +141,12 @@ def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
                 output_np[y_start:y_end, overlap_x_start:overlap_x_end], sigma=1.0
             )
 
-    # 转回 PyTorch 张量
     smoothed_output = torch.tensor(smoothed_output_np, device=device, dtype=output.dtype)
 
     return smoothed_output
 
 def merge_patches_without_padding(patches, coordinates, output_shape, patch_size, overlap, padding=250):
-    """
-    将补丁合并回原始图像，去除黑边
-    :param patches: 补丁列表
-    :param coordinates: 补丁对应的坐标列表
-    :param output_shape: 输出图像的形状
-    :param patch_size: 补丁大小 (height, width)
-    :param overlap: 重叠大小
-    :param padding: 黑边大小
-    :return: 合并后的图像
-    """
+
     h, w = output_shape
     ph, pw = patch_size
     oh, ow = overlap
@@ -214,15 +167,7 @@ def merge_patches_without_padding(patches, coordinates, output_shape, patch_size
 
 
 '''def merge_patches(patches, coordinates, output_shape, patch_size, overlap):
-    """
-    使用泊松融合将补丁合并回原始图像
-    :param patches: 补丁列表
-    :param coordinates: 补丁对应的坐标列表
-    :param output_shape: 输出图像的形状
-    :param patch_size: 补丁大小 (height, width)
-    :param overlap: 重叠大小
-    :return: 合并后的图像
-    """
+
     h, w = output_shape
     ph, pw = patch_size
     oh, ow = overlap
@@ -261,28 +206,22 @@ def main():
     save_path = 'image/result.png'
     resist_path = 'image/resist_img.png'
     
-    # 加载图像
     binary_image = load_image(input_path)
     h, w = binary_image.shape
     
-    # 定义补丁大小和重叠
     patch_size = (3000, 3000)
     overlap = (250, 250)
     scale_factor = 0.5
     
-    # 分割图像
     patches, coordinates = split_image_into_patches_with_padding(binary_image.cpu().numpy(), patch_size, overlap)
     
-    # 初始化结果列表
     best_phis = []
     best_masks = []
     best_print_imgs = []
     
-    # 创建临时文件夹
     temp_folder = 'temp_patches'
     os.makedirs(temp_folder, exist_ok=True)
     
-    # 处理每个补丁
     for i, patch in enumerate(tqdm(patches, desc="Processing Patches")):
         
         resized_patch = resize_patch(patch, scale_factor)
@@ -299,7 +238,6 @@ def main():
         mask_opt = torch.tensor(mask_opt_resized, dtype=torch.float32, device=device)
         resist_result = torch.tensor(resist_result_resized, dtype=torch.float32, device=device)
         
-        # 保存结果到临时文件
         torch.save(phi_opt, os.path.join(temp_folder, f'phi_{i}.pt'))
         torch.save(mask_opt, os.path.join(temp_folder, f'mask_{i}.pt'))
         torch.save(resist_result, os.path.join(temp_folder, f'resist_{i}.pt'))
@@ -307,7 +245,6 @@ def main():
         del patch_tensor, phi, l2Min, pvbMin, phi_opt, mask_opt, resist_result
         torch.cuda.empty_cache()
     
-    # 从临时文件夹中读取并合并结果
     for i in tqdm(range(len(patches)), desc="Loading Patches"):
         phi_opt = torch.load(os.path.join(temp_folder, f'phi_{i}.pt'))
         mask_opt = torch.load(os.path.join(temp_folder, f'mask_{i}.pt'))
@@ -322,15 +259,13 @@ def main():
 
     binarize = Binarize()
     
-    # 合并结果
     merged_phi = merge_patches_without_padding(best_phis, coordinates, (h, w), patch_size, overlap)
     #merged_mask = merge_patches(best_masks, coordinates, (h, w), patch_size, overlap)
     merged_mask = binarize(merged_phi)
     merged_resist_result = merge_patches_without_padding(best_print_imgs, coordinates, (h, w), patch_size, overlap)
     #merged_mask = torch.where(merged_mask > 0.675, torch.tensor(1), torch.tensor(0))
     
-    # 保存结果
-    plt.figure(figsize=(344, 144))
+    plt.figure(figsize=(200, 200))
     
     plt.subplot(221)
     plt.imshow(binary_image.cpu(), cmap="gray")
@@ -361,12 +296,13 @@ def main():
     plt.savefig(resist_path)
     #plt.show()
     
-    # 删除临时文件夹
     import shutil
     shutil.rmtree(temp_folder)
 
 if __name__ == "__main__":
-    begin = time.time()
-    main()
-    runtime = time.time() - begin
-    print(runtime)
+    
+    import cProfile
+    cProfile.run("main()", "result")
+    
+    import pstats
+    pstats.Stats('result').sort_stats(-1).print_stats()
