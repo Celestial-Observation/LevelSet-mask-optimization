@@ -7,14 +7,12 @@ def parse_glp_file(file_path):
     with open(file_path, 'r') as file:
         content = file.read()
 
-    # 提取比例信息
     scale_match = re.search(r'EQUIV\s+\d+\s+(\d+)\s+MICRON', content)
     if not scale_match:
         raise ValueError("无法找到比例信息")
     scale_factor = int(scale_match.group(1))
     print(f"Scale Factor: {scale_factor}")
 
-    # 提取多边形信息
     polygons = []
     polygon_pattern = re.compile(r'PGON\s+N\s+M1\s*([^\n]+)')
     lines = content.split('\n')
@@ -31,7 +29,7 @@ def parse_glp_file(file_path):
     return polygons, scale_factor
 
 def draw_polygons(polygons, scale_factor, output_path):
-    # 计算边界框并设置适当的大小
+
     min_x = min(min(p[0] for p in poly) for poly in polygons)
     max_x = max(max(p[0] for p in poly) for poly in polygons)
     min_y = min(min(p[1] for p in poly) for poly in polygons)
@@ -40,16 +38,12 @@ def draw_polygons(polygons, scale_factor, output_path):
     width = (max_x - min_x)
     height = (max_y - min_y)
 
-    # 创建黑色背景图像
     image = np.zeros((height, width, 3), dtype=np.uint8)
 
     for polygon in tqdm(polygons, desc="Drawing Polygons"):
-        # 缩放多边形坐标
         scaled_polygon = np.array([(int((p[0] - min_x)), int((p[1] - min_y))) for p in polygon])
-        # 绘制多边形，边框为白色，填充为白色
         cv2.fillPoly(image, [scaled_polygon], (255, 255, 255))
 
-    # 保存图像
     cv2.imwrite(output_path, image)
 
 def glp_to_png(glp_file_path, png_file_path):

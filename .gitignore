@@ -3,4 +3,5 @@
 /image/
 /__pycache__/
 /temp_patches/
+/.idea/
 /output.prof
